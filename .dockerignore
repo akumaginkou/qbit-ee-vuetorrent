@@ -1,0 +1,6 @@
+config/
+downloads/
+.git/
+.gitignore
+.claude/
+README.md

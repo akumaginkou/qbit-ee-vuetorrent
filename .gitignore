@@ -1,0 +1,6 @@
+# Runtime data (contains passwords, session tokens, torrents, etc.)
+config/
+downloads/
+
+# Docker build cache
+.claude/

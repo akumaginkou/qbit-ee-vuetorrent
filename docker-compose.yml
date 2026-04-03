@@ -1,0 +1,19 @@
+name: qbit-ee-vuetorrent
+
+services:
+  qbittorrent:
+    build: .
+    container_name: qbit-ee-vuetorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Tokyo
+      - WEBUI_PORT=8080
+    volumes:
+      - ./config:/config
+      - ./downloads:/downloads
+    ports:
+      - 8080:8080
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
