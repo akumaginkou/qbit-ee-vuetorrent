@@ -11,6 +11,35 @@ Docker image combining [qBittorrent Enhanced Edition](https://github.com/c0re100
 
 ## Quick Start
 
+### Using the pre-built image (recommended)
+
+```yaml
+# docker-compose.yml
+services:
+  qbittorrent:
+    image: ghcr.io/akumaginkou/qbit-ee-vuetorrent:latest
+    container_name: qbit-ee-vuetorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Tokyo
+      - WEBUI_PORT=8080
+    volumes:
+      - ./config:/config
+      - ./downloads:/downloads
+    ports:
+      - 8080:8080
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
+```
+
+```bash
+docker compose up -d
+```
+
+### Building from source
+
 ```bash
 git clone git@github.com:akumaginkou/qbit-ee-vuetorrent.git
 cd qbit-ee-vuetorrent
