@@ -78,6 +78,11 @@ RUN \
 
 # add local files
 COPY root/ /
+RUN chmod +x \
+  /etc/s6-overlay/s6-rc.d/init-qbittorrent-config/run \
+  /etc/s6-overlay/s6-rc.d/init-qbittorrent-config/up \
+  /etc/s6-overlay/s6-rc.d/svc-qbittorrent/run \
+  /usr/bin/qbt
 
 # add unrar
 COPY --from=unrar /usr/bin/unrar-alpine /usr/bin/unrar
