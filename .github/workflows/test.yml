@@ -1,0 +1,144 @@
+name: Test Docker Image
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: "Docker image tag to test (if pre-built)"
+        required: false
+        type: string
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        run: |
+          docker build -t qbit-test:local .
+
+      - name: Verify qbittorrent-nox binary
+        run: |
+          echo "=== Check binary exists and runs ==="
+          docker run --rm qbit-test:local /usr/bin/qbittorrent-nox --version
+
+      - name: Verify VueTorrent files
+        run: |
+          echo "=== Check VueTorrent index.html exists ==="
+          docker run --rm qbit-test:local test -f /vuetorrent/vuetorrent/public/index.html
+
+      - name: Verify unrar binary
+        run: |
+          docker run --rm qbit-test:local unrar --version
+
+      - name: Start container and run integration tests
+        run: |
+          # Start container
+          docker run -d \
+            --name qbit-test \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -p 8080:8080 \
+            qbit-test:local
+
+          # Wait for qBittorrent to be ready (max 60s)
+          echo "=== Waiting for WebUI to be ready ==="
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080 > /dev/null 2>&1; then
+              echo "WebUI is ready after ${i}*2 seconds"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: WebUI did not start in time"
+              docker logs qbit-test
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # Test: WebUI returns HTTP 200
+          echo "=== Test: WebUI HTTP 200 ==="
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: Expected HTTP 200, got $HTTP_CODE"
+            docker logs qbit-test
+            exit 1
+          fi
+          echo "PASS: WebUI returned HTTP $HTTP_CODE"
+
+          # Test: VueTorrent is served (check for VueTorrent-specific content)
+          echo "=== Test: VueTorrent WebUI is active ==="
+          BODY=$(curl -s http://localhost:8080)
+          if echo "$BODY" | grep -qi "vuetorrent"; then
+            echo "PASS: VueTorrent content detected"
+          else
+            echo "WARN: VueTorrent keyword not found in response, checking for app shell..."
+            if echo "$BODY" | grep -q '<div id="app">'; then
+              echo "PASS: App shell detected"
+            else
+              echo "FAIL: Neither VueTorrent nor app shell found"
+              echo "$BODY" | head -20
+              exit 1
+            fi
+          fi
+
+          # Test: qBittorrent WebAPI with authentication
+          echo "=== Test: qBittorrent API login and version ==="
+          TEMP_PASS=$(docker logs qbit-test 2>&1 | grep -oP "temporary password.*: \K\S+")
+          if [ -z "$TEMP_PASS" ]; then
+            echo "FAIL: Could not extract temporary password from logs"
+            docker logs qbit-test
+            exit 1
+          fi
+          echo "Extracted temp password"
+
+          # Login and get session cookie
+          LOGIN_RESP=$(curl -s -c /tmp/qbt-cookies http://localhost:8080/api/v2/auth/login \
+            -d "username=admin&password=${TEMP_PASS}")
+          if [ "$LOGIN_RESP" != "Ok." ]; then
+            echo "FAIL: Login failed: $LOGIN_RESP"
+            exit 1
+          fi
+          echo "PASS: Login successful"
+
+          # Get version with auth
+          API_RESP=$(curl -s -b /tmp/qbt-cookies http://localhost:8080/api/v2/app/version)
+          if echo "$API_RESP" | grep -qE "^v?[0-9]+\.[0-9]+"; then
+            echo "PASS: API returned version: $API_RESP"
+          else
+            echo "FAIL: Unexpected API response: $API_RESP"
+            docker logs qbit-test
+            exit 1
+          fi
+
+          # Get preferences with auth
+          echo "=== Test: qBittorrent API /api/v2/app/preferences ==="
+          PREF_CODE=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/qbt-cookies http://localhost:8080/api/v2/app/preferences)
+          if [ "$PREF_CODE" = "200" ]; then
+            echo "PASS: Preferences endpoint returned HTTP 200"
+          else
+            echo "FAIL: Unexpected status $PREF_CODE"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== All tests passed ==="
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker logs qbit-test 2>&1 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f qbit-test 2>/dev/null || true

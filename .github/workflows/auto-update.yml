@@ -1,0 +1,152 @@
+name: Auto Update on Upstream Release
+
+on:
+  schedule:
+    # Daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      ee_version: ${{ steps.check.outputs.ee_version }}
+      vt_version: ${{ steps.check.outputs.vt_version }}
+      ee_updated: ${{ steps.check.outputs.ee_updated }}
+      vt_updated: ${{ steps.check.outputs.vt_updated }}
+      has_update: ${{ steps.check.outputs.has_update }}
+
+    steps:
+      - name: Check upstream releases
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch latest upstream versions
+          EE_VERSION=$(curl -sL "https://api.github.com/repos/c0re100/qBittorrent-Enhanced-Edition/releases/latest" | jq -r '.tag_name')
+          VT_VERSION=$(curl -sL "https://api.github.com/repos/VueTorrent/VueTorrent/releases/latest" | jq -r '.tag_name')
+
+          echo "Latest EE version: ${EE_VERSION}"
+          echo "Latest VT version: ${VT_VERSION}"
+
+          echo "ee_version=${EE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "vt_version=${VT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Check if we already have a release for this EE version
+          RELEASE_TAG="ee-${EE_VERSION}"
+          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists"
+            EE_UPDATED="false"
+          else
+            echo "New EE version detected: ${EE_VERSION}"
+            EE_UPDATED="true"
+          fi
+
+          # Check VueTorrent by looking at release body for VT version
+          if gh release list --repo "${{ github.repository }}" --limit 5 | grep -q "${VT_VERSION}"; then
+            VT_UPDATED="false"
+          else
+            echo "New VueTorrent version detected: ${VT_VERSION}"
+            VT_UPDATED="true"
+          fi
+
+          echo "ee_updated=${EE_UPDATED}" >> "$GITHUB_OUTPUT"
+          echo "vt_updated=${VT_UPDATED}" >> "$GITHUB_OUTPUT"
+
+          if [ "${EE_UPDATED}" = "true" ] || [ "${VT_UPDATED}" = "true" ]; then
+            echo "has_update=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "No updates found, skipping build."
+          fi
+
+  test:
+    needs: check-updates
+    if: needs.check-updates.outputs.has_update == 'true'
+    uses: ./.github/workflows/test.yml
+
+  build-and-push:
+    needs: [check-updates, test]
+    if: needs.check-updates.outputs.has_update == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set build metadata
+        id: vars
+        run: |
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=ee-${{ needs.check-updates.outputs.ee_version }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ steps.vars.outputs.build_date }}
+            QBITTORRENT_EE_VERSION=${{ needs.check-updates.outputs.ee_version }}
+            VUETORRENT_VERSION=${{ needs.check-updates.outputs.vt_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EE_VERSION="${{ needs.check-updates.outputs.ee_version }}"
+          VT_VERSION="${{ needs.check-updates.outputs.vt_version }}"
+          RELEASE_TAG="ee-${EE_VERSION}"
+
+          NOTES="## Auto-updated components
+
+          - **qBittorrent Enhanced Edition**: \`${EE_VERSION}\`
+          - **VueTorrent**: \`${VT_VERSION}\`
+
+          ### Docker pull
+          \`\`\`bash
+          docker pull ghcr.io/${{ github.repository }}:latest
+          docker pull ghcr.io/${{ github.repository }}:${RELEASE_TAG}
+          \`\`\`
+
+          ### Changes
+          - EE updated: ${{ needs.check-updates.outputs.ee_updated }}
+          - VueTorrent updated: ${{ needs.check-updates.outputs.vt_updated }}"
+
+          gh release create "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --title "qBittorrent EE ${EE_VERSION} + VueTorrent ${VT_VERSION}" \
+            --notes "${NOTES}"
