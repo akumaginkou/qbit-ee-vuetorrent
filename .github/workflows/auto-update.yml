@@ -146,7 +146,18 @@ jobs:
           - EE updated: ${{ needs.check-updates.outputs.ee_updated }}
           - VueTorrent updated: ${{ needs.check-updates.outputs.vt_updated }}"
 
-          gh release create "${RELEASE_TAG}" \
-            --repo "${{ github.repository }}" \
-            --title "qBittorrent EE ${EE_VERSION} + VueTorrent ${VT_VERSION}" \
-            --notes "${NOTES}"
+          TITLE="qBittorrent EE ${EE_VERSION} + VueTorrent ${VT_VERSION}"
+
+          if gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} exists — updating title and notes"
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${{ github.repository }}" \
+              --title "${TITLE}" \
+              --notes "${NOTES}"
+          else
+            echo "Creating new release ${RELEASE_TAG}"
+            gh release create "${RELEASE_TAG}" \
+              --repo "${{ github.repository }}" \
+              --title "${TITLE}" \
+              --notes "${NOTES}"
+          fi
